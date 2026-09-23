@@ -53,7 +53,62 @@ export const FAIL_URL = "https://cdn.example.com/videos/corrupt.mp4";
  * the failing URL), watch them fail, then make them pass.
  */
 export function computeRun(record: RunRecord, now: number = Date.now()): EncodeRun {
-  throw new Error("Not implemented: computeRun (see TODO above)");
+  const elapsed = Math.max(0, now - record.startedAt);
+
+  // Corrupt media failure check at failAtMs (8000ms)
+  if (record.sourceUrl === FAIL_URL && elapsed >= TIMELINE.failAtMs) {
+    const frozenPct = Math.min(
+      100,
+      Math.round((TIMELINE.failAtMs / TIMELINE.transcodingEndsMs) * 100),
+    );
+    return {
+      id: record.id,
+      jobId: record.jobId,
+      stage: "FAILED",
+      progressPct: frozenPct,
+      message: "Transcoding failed: corrupt source media",
+      error: "Corrupt media file: invalid container header at offset 0x04F2",
+    };
+  }
+
+  if (elapsed < TIMELINE.queuedEndsMs) {
+    return {
+      id: record.id,
+      jobId: record.jobId,
+      stage: "QUEUED",
+      progressPct: Math.min(100, Math.round((elapsed / TIMELINE.transcodingEndsMs) * 100)),
+      message: "Queued for transcoding…",
+    };
+  }
+
+  if (elapsed < TIMELINE.downloadingEndsMs) {
+    return {
+      id: record.id,
+      jobId: record.jobId,
+      stage: "DOWNLOADING",
+      progressPct: Math.min(100, Math.round((elapsed / TIMELINE.transcodingEndsMs) * 100)),
+      message: "Downloading source video…",
+    };
+  }
+
+  if (elapsed < TIMELINE.transcodingEndsMs) {
+    return {
+      id: record.id,
+      jobId: record.jobId,
+      stage: "TRANSCODING",
+      progressPct: Math.min(100, Math.round((elapsed / TIMELINE.transcodingEndsMs) * 100)),
+      message: "Transcoding 1080p stream…",
+    };
+  }
+
+  return {
+    id: record.id,
+    jobId: record.jobId,
+    stage: "COMPLETED",
+    progressPct: 100,
+    message: "Encoding completed successfully",
+    result: makeResult(),
+  };
 }
 
 // ---------------------------------------------------------------------------
