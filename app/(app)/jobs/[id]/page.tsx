@@ -1,50 +1,45 @@
 "use client";
 
-import { use } from "react";
+import { use, useState } from "react";
 import Link from "next/link";
-import { useJob } from "@/lib/client/hooks";
+import { useJob, useStartRun } from "@/lib/client/hooks";
+import { useRunPolling } from "@/lib/client/use-run-polling";
 import { StatusBadge } from "@/components/status-badge";
+import { ProgressBar } from "@/components/progress-bar";
+import { formatRelativeTime } from "@/lib/client/format-time";
 
-// The header (title, source URL, status badge, loading and not-found states) is provided.
-//
-// ---------------------------------------------------------------------------
-// TASK 5 — TODO(candidate): build the run panel where the placeholder is.
-// ---------------------------------------------------------------------------
-//
-// This is the most substantial screen in the exercise. Build it in this order:
-//
-//   1. A "Start encode" button that calls the provided useStartRun(job.id) mutation and keeps
-//      the returned `runId` in state. Disable it while a run is in flight.
-//
-//   2. Live progress, driven by your useRunPolling(runId) hook:
-//        - the current stage (<StatusBadge value={run.stage} />),
-//        - a percentage bar (<ProgressBar value={run.progressPct} />),
-//        - the log — the messages collected so far, newest last.
-//      A run takes about 12 seconds, so you'll see the whole thing without waiting long.
-//
-//   3. The FAILED case. Create a job with the source URL
-//        https://cdn.example.com/videos/corrupt.mp4
-//      and it will fail partway. Show the error message clearly (a red panel, `failed` on the
-//      progress bar) and offer a Retry that starts a fresh run.
-//
-//   4. The COMPLETED case. `run.result` arrives with the final poll: show the duration and a
-//      small table of renditions (label / resolution / size). Plain and readable beats fancy.
-//
-// A note on state: at any moment this screen is in exactly one of — idle, running, failed,
-// completed. Try to make that explicit in how you write it, rather than juggling several
-// booleans that could contradict each other (`isRunning && isFailed` should be impossible to
-// express, not merely unlikely). Say what you chose in the README.
-//
-// We are NOT grading visual design. Correct behaviour and readable code are what count.
 export default function JobDetailPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const jobQuery = useJob(id);
+  const startRunMutation = useStartRun(id);
+
+  const [activeRunId, setActiveRunId] = useState<string | null>(null);
+
+  const job = jobQuery.data;
+
+  // Initialize activeRunId from job's latestRunId if present and no active run set yet
+  const effectiveRunId = activeRunId ?? job?.latestRunId ?? null;
+
+  const pollingState = useRunPolling(effectiveRunId, () => {
+    jobQuery.refetch();
+  });
+
+  const { run, polling, fetchError, log } = pollingState;
+
+  const handleStartRun = async () => {
+    try {
+      const res = await startRunMutation.mutateAsync();
+      setActiveRunId(res.runId);
+    } catch {
+      // Error is accessible via startRunMutation.error
+    }
+  };
 
   if (jobQuery.isLoading) {
     return <p className="text-sm text-neutral-500">Loading job…</p>;
   }
 
-  if (jobQuery.isError || !jobQuery.data) {
+  if (jobQuery.isError || !job) {
     return (
       <div className="text-sm text-red-600">
         Job not found.{" "}
@@ -55,7 +50,8 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
     );
   }
 
-  const job = jobQuery.data;
+  const isFailed = run?.stage === "FAILED" || job.status === "FAILED";
+  const isCompleted = run?.stage === "COMPLETED" || job.status === "COMPLETED";
 
   return (
     <div className="space-y-6">
@@ -65,16 +61,129 @@ export default function JobDetailPage({ params }: { params: Promise<{ id: string
 
       <div className="flex items-start justify-between gap-4">
         <div className="min-w-0">
-          <h1 className="truncate text-xl font-semibold">{job.title}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="truncate text-xl font-semibold">{job.title}</h1>
+            <span className="text-xs text-neutral-400">• {formatRelativeTime(job.createdAt)}</span>
+          </div>
           <p className="truncate text-sm text-neutral-500">{job.sourceUrl}</p>
         </div>
         <StatusBadge value={job.status} />
       </div>
 
-      <p className="rounded-md border border-dashed border-neutral-300 p-4 text-sm text-neutral-500">
-        TODO(candidate): Start encode button, live progress, log, failure + retry, and the results
-        table.
-      </p>
+      <div className="rounded-lg border border-neutral-200 bg-white p-6 shadow-sm space-y-6">
+        {!effectiveRunId && (
+          <div className="flex flex-col items-start gap-4">
+            <p className="text-sm text-neutral-600">
+              This job has not been run yet. Click below to start the media transcoding pipeline.
+            </p>
+            <button
+              onClick={handleStartRun}
+              disabled={startRunMutation.isPending}
+              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500/40 disabled:opacity-50"
+            >
+              {startRunMutation.isPending ? "Starting encode…" : "Start encode"}
+            </button>
+          </div>
+        )}
+
+        {effectiveRunId && (
+          <div className="space-y-6">
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <span className="text-sm font-medium text-neutral-700">Stage:</span>
+                  {run?.stage && <StatusBadge value={run.stage} />}
+                </div>
+                <span className="text-sm font-semibold text-neutral-700">
+                  {run ? `${Math.round(run.progressPct)}%` : "0%"}
+                </span>
+              </div>
+
+              <ProgressBar
+                value={run?.progressPct ?? 0}
+                failed={isFailed}
+              />
+            </div>
+
+            {isFailed && (
+              <div className="rounded-md border border-red-200 bg-red-50 p-4 space-y-3">
+                <div className="flex items-start gap-2 text-red-800">
+                  <span className="font-semibold text-sm">Transcoding Error:</span>
+                  <span className="text-sm">{run?.error || "Media stream processing failed"}</span>
+                </div>
+                <button
+                  onClick={handleStartRun}
+                  disabled={startRunMutation.isPending}
+                  className="rounded-md bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500/40 disabled:opacity-50"
+                >
+                  {startRunMutation.isPending ? "Retrying…" : "Retry encode"}
+                </button>
+              </div>
+            )}
+
+            {fetchError && (
+              <div className="rounded-md border border-amber-200 bg-amber-50 p-3 text-xs text-amber-800">
+                Warning: {fetchError}. Retrying connection...
+              </div>
+            )}
+
+            <div className="space-y-2">
+              <h2 className="text-sm font-medium text-neutral-700">Live Log</h2>
+              <div
+                className="max-h-48 overflow-y-auto rounded-md bg-neutral-900 p-3 text-xs font-mono text-neutral-200 space-y-1"
+                aria-live="polite"
+                aria-atomic="false"
+              >
+                {log.length === 0 ? (
+                  <p className="text-neutral-500">Connecting to run runner…</p>
+                ) : (
+                  log.map((entry, idx) => (
+                    <div key={idx} className="flex items-start gap-2">
+                      <span className="text-neutral-500 select-none">&gt;</span>
+                      <span>{entry}</span>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+
+            {isCompleted && run?.result && (
+              <div className="space-y-4 pt-2 border-t border-neutral-100">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-base font-semibold text-neutral-900">Output Renditions</h2>
+                  <span className="text-xs text-neutral-500">
+                    Duration: {run.result.durationSec}s
+                  </span>
+                </div>
+
+                <div className="overflow-x-auto rounded-md border border-neutral-200">
+                  <table className="w-full text-left text-sm">
+                    <thead className="bg-neutral-50 text-xs font-medium text-neutral-500 uppercase tracking-wider border-b border-neutral-200">
+                      <tr>
+                        <th className="px-4 py-2.5">Resolution / Label</th>
+                        <th className="px-4 py-2.5">Dimensions</th>
+                        <th className="px-4 py-2.5">File Size</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-neutral-200 bg-white">
+                      {run.result.renditions.map((r) => (
+                        <tr key={r.label} className="hover:bg-neutral-50">
+                          <td className="px-4 py-2.5 font-medium text-neutral-900">{r.label}</td>
+                          <td className="px-4 py-2.5 text-neutral-600">
+                            {r.width} × {r.height}
+                          </td>
+                          <td className="px-4 py-2.5 text-neutral-600">{r.sizeMb.toFixed(1)} MB</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
+
