@@ -27,7 +27,7 @@ Requires **Node 20+** (`.nvmrc` specifies 20).
 All **6 Tasks** are fully implemented, verified, and tested:
 
 - **Task 1 (`lib/schemas.ts`)**: `sourceUrlSchema` strictly enforces valid `http(s)` URLs with non-empty path segments, returning actionable error messages for each error mode (empty string, malformed URL, unsupported protocol like `ftp://`, or root URL missing a file path).
-- **Task 2 (`app/api/jobs/route.ts`)**: `GET /api/jobs` and `POST /api/jobs` route handlers implemented with `withAuth` route guards. `POST` validates payloads using `createJobSchema` and returns HTTP 422 with `fieldErrors` on failure, returning HTTP 201 on success.
+- **Task 2 (`app/api/jobs/route.ts`)**: `GET /api/jobs` and `POST /api/jobs` route handlers wrapped in `withAuth`. `POST` validates payloads using `createJobSchema` and returns HTTP 422 with `fieldErrors` on failure, returning HTTP 201 on success.
 - **Task 3 (`lib/server/store.ts` → `computeRun()`)**: Pure, deterministic stage calculation derived strictly from elapsed time (`now - record.startedAt`). Implemented using TDD with zero server-side timers.
 - **Task 4 (`app/(app)/jobs/page.tsx` & `lib/client/hooks.ts`)**: `useCreateJob()` React Query mutation invalidates cache upon success. The form utilizes React Hook Form with `zodResolver(createJobSchema)`, displaying field errors inline and mapping server 422 `fieldErrors` via `setError()`. Includes relative job creation timestamps ("created 2 minutes ago").
 - **Task 5 (`lib/client/use-run-polling.ts` & `app/(app)/jobs/[id]/page.tsx`)**: Polling hook fetches run progress ~1s, halting immediately when terminal stage (`COMPLETED` or `FAILED`) is hit. Robust cleanup handles unmounting and ID changes cleanly. Renders live stage badges, progress bar, deduplicated live event log, failure panel with retry button, and output renditions table.
@@ -50,9 +50,10 @@ All **6 Tasks** are fully implemented, verified, and tested:
 
 ### 3. Decisions and assumptions
 
+- **Whole-Run Monotonic Progress Bar Scaling**: In `computeRun`, `progressPct` is calculated as `elapsed / TIMELINE.transcodingEndsMs * 100` across the entire 12-second job lifecycle. I modeled `progressPct` as total completion percentage rather than resetting percentage to 0% at each stage transition. Resetting percentage to 0% upon entering a new stage would cause the progress bar to jump backwards from 100% to 0% three separate times, breaking monotonic progress expectations.
+- **Microtask Execution Guarantee in Polling Setup**: In `useRunPolling`, the initial `poll()` execution is invoked synchronously right before `timerId = setInterval(poll, 1000)`. Because `poll()` contains `await fetchRun(runId!)`, JavaScript pauses execution at the `await` keyword and yields control back to the synchronous caller frame. This guarantees that `timerId = setInterval(...)` executes *before* `fetchRun` resolves. If the run is already terminal on the very first poll response, `timerId` is already guaranteed to be a valid non-null ID when `clearInterval(timerId)` is called.
+- **Transient Network Error Resiliency**: If a poll request fails (e.g. temporary network drop), `useRunPolling` sets `fetchError` to display a non-intrusive warning banner ("Warning: connection failed..."). The interval loop remains active, retrying automatically on the next 1-second tick without tearing down the hook state.
 - **Detail Page State Modeling**: Modeled the run view cleanly around explicit derived states (`isFailed`, `isCompleted`, `isRunning`), driven by `effectiveRunId` and `useRunPolling`. This prevents contradictory boolean flags (e.g. `isRunning && isFailed` cannot occur).
-- **Async Polling Cleanup**: In `useRunPolling`, a `cancelled` boolean guard is set during effect cleanup and checked immediately after every `await fetchRun()` call before touching React state. Combined with `clearInterval`, this guarantees no state is set on unmounted components or stale run IDs.
-- **Tab Visibility Handling**: Implemented `document.visibilityState` detection in `useRunPolling`. Polling automatically pauses when the browser tab is hidden to save network resources, and resumes immediately when the tab regains focus.
 - **Single Source of Truth Validation**: Shared `sourceUrlSchema` between client-side React Hook Form resolvers and server-side Next.js route handlers. The server never trusts client input.
 - **Visual Treatment**: Applied plain Tailwind styling to `StatusBadge` and `ProgressBar` with bold 2px borders (`border-2 border-black`) and hard flat offset shadows (`shadow-[2px_2px_0px_0px_rgba(0,0,0,1)]`) without adding new components.
 
@@ -61,7 +62,7 @@ All **6 Tasks** are fully implemented, verified, and tested:
 ### 4. What was hardest
 
 - **Async Correctness & Polling Lifecycle**: Preventing race conditions when navigating away from a run mid-progress or switching between runs quickly was the most subtle challenge. A fetch request initiated just before unmount will resolve after unmount; calling `setState` at that point would attempt state updates on unmounted components. Resolving this required combining `clearInterval` with a `cancelled` flag checked after the asynchronous `await` boundary.
-- **Deterministic Stage Boundaries in TDD**: Ensuring `computeRun` handled exact boundary instants (`0ms`, `2000ms`, `6000ms`, `8000ms`, `12000ms`) without off-by-one errors (`<` vs `<=`). Practicing TDD by writing all 9 boundary tests in `compute-run.test.ts` *before* implementing `computeRun()` ensured every edge case was verified deterministically.
+- **Deterministic Stage Boundaries in TDD**: Ensuring `computeRun` handled exact boundary instants (`0ms`, `2000ms`, `6000ms`, `8000ms`, `12000ms`) without off-by-one errors (`<` vs `<=`). Practicing TDD by writing all 9 boundary tests in `compute-run.test.ts` *before* implementing `computeRun()` ensured every edge case was verified deterministically against `TIMELINE` constants.
 
 ---
 
