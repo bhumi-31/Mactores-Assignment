@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { api } from "@/lib/client/api";
+import { api, ApiError } from "@/lib/client/api";
 import type { CreateJobInput } from "@/lib/schemas";
 import type { EncodeRun, Job } from "@/lib/types";
 
@@ -52,25 +52,26 @@ export function useStartRun(jobId: string) {
 }
 
 /**
- * TASK 4 — TODO(candidate): a mutation that creates a job.
+ * TASK 4 — a mutation that creates a job.
  *
- * It should POST the form values to /api/jobs and, on success, invalidate jobKeys.all so the
- * list picks up the new job. Model it on useStartRun above.
- *
- * The return type of the POST is Job. The input type is CreateJobInput (imported above), which
- * is inferred from the same Zod schema the form uses — so the form, this mutation and the server
- * all agree on the shape.
- *
- * Errors need no special handling here: api.ts throws an ApiError, and the component reads
- * `mutation.error` to decide what to show.
+ * POSTs form values to /api/jobs and on success invalidates jobKeys.all so the list refreshes.
  */
+export function useCreateJob() {
+  const queryClient = useQueryClient();
+  return useMutation<Job, ApiError, CreateJobInput>({
+    mutationFn: (data: CreateJobInput) => api.post<Job>("/api/jobs", data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: jobKeys.all });
+    },
+  });
+}
 
 /**
- * TASK 5 — TODO(candidate): fetch a single run's current state.
- *
- * GET /api/runs/:id returns an EncodeRun. Your polling hook (use-run-polling.ts) needs a way to
- * ask for it. Either a small `fetchRun(runId)` function using `api.get`, or a useQuery hook with
- * a `refetchInterval` — both are legitimate; pick one and say why in the README.
+ * TASK 5 — helper to fetch a single run's current state.
  */
+export async function fetchRun(runId: string, signal?: AbortSignal): Promise<EncodeRun> {
+  return api.get<EncodeRun>(`/api/runs/${runId}`, signal);
+}
 
 export type { EncodeRun, Job, CreateJobInput };
+
